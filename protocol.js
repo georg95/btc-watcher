@@ -1,14 +1,82 @@
 
 import crypto from 'crypto'
 import net from 'net'
+import dns from 'dns'
 import ip from 'ip'
 
-export function connect(addr, onCommand) {
+let ALL_NODES = new Set()
+let USED_NODES = new Set()
+export async function getDnsSeedNode() {
+    const DNS_SEEDS = [ // https://github.com/bitcoin/bitcoin/blob/623745ca74cf3f54b474dac106f5802b7929503f/src/chainparams.cpp#L121
+        'seed.bitcoin.sipa.be',
+        'dnsseed.bluematt.me',
+        'dnsseed.bitcoin.dashjr.org',
+        'seed.bitcoinstats.com',
+        'seed.bitcoin.jonasschnelli.ch',
+        'seed.btc.petertodd.org',
+        'seed.bitcoin.sprovoost.nl',
+        'dnsseed.emzy.de',
+        'seed.bitcoin.wiz.biz',
+    ]
+    async function fillNodesList() {
+        return new Promise((resolve, reject) => {
+            let resolved = 0
+            DNS_SEEDS.forEach(seed => dns.resolve(seed, (error, nodes) => {
+                nodes?.forEach(node => !USED_NODES.has(node) && ALL_NODES.add(node))
+                if (ALL_NODES.size > 0) { resolve(); return }
+                if (++resolved === DNS_SEEDS.length - 1) { reject() }
+            }))
+        })
+    }
+    if (ALL_NODES.size === 0) {
+        await fillNodesList()
+    }
+    let nodes = Array.from(ALL_NODES)
+    const node = nodes[Math.floor(Math.random() * nodes.length)]
+    USED_NODES.add(node)
+    return node
+}
+
+export async function connect(onTransaction, { minNodes=6 }={}) {
+    let nodes = []
+    const seenBlocks = new Set()
+    Array(minNodes).fill(0).forEach(addNode)
+
+    async function addNode() {
+        const addr = await getDnsSeedNode()
+        const node = connectNode(addr, ({ command, data }) => {
+            if (command === 'verack') { console.log('🌐', addr) }
+            if (command === 'inv') {
+                readInvVect(data).forEach(({ hash, type }) => {
+                    if (type === 2 && !seenBlocks.has(Buffer.from(hash).reverse().toString('hex'))) {
+                        node.getInvData({ hash, type })
+                    }
+                })
+            }
+            if (command === 'block') {
+                const hash = sha256(sha256(data.payload.subarray(data.offset, data.offset+80))).reverse().toString('hex')
+                if (!seenBlocks.has(hash)) {
+                    readBlock(data, onTransaction)
+                    console.log(`⛓️  ${hash}`)
+                }
+            }
+        })
+        node.socket.once('close', async () => {
+            console.log('❌', addr)
+            nodes = nodes.filter(n => node !== n)
+            addNode()
+        })
+        nodes.push(node)
+    }
+}
+
+function connectNode(addr, onCommand) {
     let socket = net.connect(8333, addr)
     socket.once('connect', sendVersionPacket)
-    socket.once('close', () => console.log(`❌ ${addr} closed`))
-    socket.on('error', (err) => console.error(`❌ ${addr}`, err))
+    socket.once('close', () => pings !== null && clearInterval(pings))
+    socket.on('error', (err) => {/* fixes unhandled exception */})
 
+    let pings = null
     let socketBuffer = Buffer.alloc(0)
     socket.on('data', function onData(chunk) {
         if (chunk) {
@@ -27,21 +95,11 @@ export function connect(addr, onCommand) {
         // TODO checksum test
 
         if (command === 'version') { socket.write(getMessageHeader('verack')) }
-        if (command === 'verack') { sendPing() }
-        if (command === 'ping') { sendPong(data) }
-        if (command === 'inv') {
-            const count = readVarInt(data)
-            for (let i = 0; i < count; i++) {
-                const vect = readInvVect(data)
-                if (vect.type === 4 || vect.type === 2) {
-                    const MSG_BLOCK = 2
-                    getInvData({
-                        type: MSG_BLOCK,
-                        hash: vect.hash
-                    })
-                }
-            }
+        if (command === 'verack') {
+            sendPing()
+            pings = setInterval(sendPing, 20 * 1000)
         }
+        if (command === 'ping') { sendPong(data) }
 
         if (socketBuffer.length >= 24) {
             onData()
@@ -75,7 +133,7 @@ export function connect(addr, onCommand) {
         let lastByte = 0
         payload.writeUint8(1, lastByte); lastByte += 1
         payload.writeUint32LE(type, lastByte); lastByte += 4
-        payload.write(hash, lastByte, 'hex'); lastByte += 32
+        payload.write(hash.toString('hex'), lastByte, 'hex'); lastByte += 32
 
         socket.write(getMessageHeader('getdata', payload))
         socket.write(payload)
@@ -83,7 +141,7 @@ export function connect(addr, onCommand) {
 
     function sendVersionPacket() {
         const PROTOCOL_VERSION = 70012
-        const USER_AGENT = '/node.js:22.5.1/btc-watcher:0.1/'
+        const USER_AGENT = '/btc-watcher:0.2/'
 
         let lastByte = 0
         const payloadConstruct = Buffer.alloc(86 + USER_AGENT.length)
@@ -107,7 +165,7 @@ export function connect(addr, onCommand) {
         socket.write(getMessageHeader('version', payloadConstruct))
         socket.write(payloadConstruct)
     }
-
+    return { addr, socket, getInvData }
 }
 
 function readUInt16(data) { return data.payload.readUInt16LE((data.offset += 2) - 2) }
@@ -128,11 +186,14 @@ function readVarInt(data) {
     }
 }
 function readInvVect(data) {
-    let type = data.payload.writeUint32LE(data.offset)
-    data.offset += 4
-    let hash = data.payload.toString('hex', data.offset, data.offset + 32)
-    data.offset += 32
-    return { type, hash }
+    const count = readVarInt(data)
+    const vectList = []
+    for (let i = 0; i < count; i++) {
+        let type = readUInt32(data)
+        let hash = readHex(data, 32)
+        vectList.push({ type, hash })
+    }
+    return vectList
 }
 function readTransaction(data, onOutAddress) {
     const offsetStart = data.offset
@@ -159,7 +220,7 @@ function readTransaction(data, onOutAddress) {
         return { previous_output_hash, previous_output_index, signature_script, sequence }
     }
     function readTXoutput() {
-        const value = readInt64(data)
+        const value = Number(readInt64(data)) / 100_000_000
         const pk_script_length = readVarInt(data)
         const script = readHex(data, pk_script_length)
         const addr = scriptToAddr(script)
@@ -176,7 +237,7 @@ function readTransaction(data, onOutAddress) {
     }
     return { tx_hash, version, flag, tx_in, tx_out, tx_witnesses, lock_time }
 }
-function readBlockHeader(data) {
+export function readBlockHeader(data) {
     const hash = sha256(sha256(data.payload.subarray(data.offset, data.offset+80))).reverse().toString('hex')
     const version = readInt32(data)
     const prev_block = readHex(data, 32)
