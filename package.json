@@ -1,5 +1,6 @@
 {
   "name": "btc-watcher",
-  "version": "0.2",
+  "version": "0.3",
+  "type": "module",
   "main": "index.js"
 }
