@@ -227,13 +227,19 @@ function readTransaction(data, onOutAddress) {
         }
     }
     /* const lock_time = readUInt32(data) */ data.offset += 4
-    const tx_hash = sha256(sha256(Buffer.concat([
-        data.payload.subarray(startOffset, startOffset + 4),
-        data.payload.subarray(txInOffset, txOutOffset),
-        data.payload.subarray(data.offset - 4, data.offset),
-    ]))).reverse().toString('hex')
+    const endOffset = data.offset
     if (onOutAddress) {
-        scripts.forEach(({ script, value }) => onOutAddress({ script, get addr() { return scriptToAddr(script) }, value, tx_hash }))
+        scripts.forEach(({ script, value }) => onOutAddress({
+            script,
+            get addr() { return scriptToAddr(script) },
+            value,
+            get tx_hash() {
+                return sha256(sha256(Buffer.concat([
+                    data.payload.subarray(startOffset, startOffset + 4),
+                    data.payload.subarray(txInOffset, txOutOffset),
+                    data.payload.subarray(endOffset - 4, endOffset),
+                ]))).reverse().toString('hex')
+            } }))
     }
 }
 export function readBlockHeader(data) {
