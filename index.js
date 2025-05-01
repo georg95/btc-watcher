@@ -196,46 +196,45 @@ function readInvVect(data) {
     return vectList
 }
 function readTransaction(data, onOutAddress) {
-    const offsetStart = data.offset
-    const version = readUInt32(data)
+    const startOffset = data.offset
+    /* const version = readUInt32(data) */ data.offset += 4
     const hasWitness = data.payload[data.offset] === 0
-    const flag = hasWitness ? readUInt16(data) : 0
-    const tx_in_count = readVarInt(data)
-    const tx_in = Array(tx_in_count).fill(0).forEach(readTXinput)
-    const tx_out_count = readVarInt(data)
-    const tx_out = Array(tx_out_count).fill(0).map(readTXoutput)
-    const tx_witnesses = hasWitness ? Array(tx_in_count).fill(0).map(readTXWitness) : []
-    const lock_time = hasWitness ? 0 : readUInt32(data)
-    const tx_hash = sha256(sha256(data.payload.subarray(offsetStart, data.offset))).reverse().toString('hex')
-    if (onOutAddress) {
-        tx_out.forEach(({ addr, value, script }) => onOutAddress({ addr, value, script, tx_hash }))
-    }
-
-    function readTXinput() {
-        const previous_output_hash = readHex(data, 32)
-        const previous_output_index = readUInt32(data)
+    if (hasWitness) { data.offset += 2 }; let txInOffset = data.offset
+    const tx_in_count = readVarInt(data);
+    for (let i = 0; i < tx_in_count; i++) {
+        /* const previous_output_hash = readHex(data, 32)
+        const previous_output_index = readUInt32(data) */ data.offset += 36
         const script_length = readVarInt(data)
-        const signature_script = readHex(data, script_length)
-        const sequence = readUInt32(data)
-        return { previous_output_hash, previous_output_index, signature_script, sequence }
+        /* const signature_script = readHex(data, script_length)
+        const sequence = readUInt32(data) */  data.offset += script_length + 4
     }
-    function readTXoutput() {
+    const tx_out_count = readVarInt(data)
+    let scripts = []
+    for (let i = 0; i < tx_out_count; i++) {
         const value = Number(readInt64(data)) / 100_000_000
         const pk_script_length = readVarInt(data)
         const script = readHex(data, pk_script_length)
-        const addr = scriptToAddr(script)
-        return { value, addr, script }
+        if (onOutAddress) { scripts.push({ script, value }) }
     }
-    function readTXWitness() {
-        const data_components_count = readVarInt(data)
-        const data_components = Array(data_components_count).fill(0).map(readTXWitnessComponent)
-        function readTXWitnessComponent() {
-            const component_size = readVarInt(data)
-            return readHex(data, component_size)
+    let txOutOffset = data.offset
+    if (hasWitness) {
+        for (let i = 0; i < tx_in_count; i++) {
+            const data_components_count = readVarInt(data)
+            for (let j = 0; j < data_components_count; j++) {
+                const component_size = readVarInt(data)
+                /* readHex(data, component_size) */ data.offset += component_size
+            }
         }
-        return data_components
     }
-    return { tx_hash, version, flag, tx_in, tx_out, tx_witnesses, lock_time }
+    /* const lock_time = readUInt32(data) */ data.offset += 4
+    const tx_hash = sha256(sha256(Buffer.concat([
+        data.payload.subarray(startOffset, startOffset + 4),
+        data.payload.subarray(txInOffset, txOutOffset),
+        data.payload.subarray(data.offset - 4, data.offset),
+    ]))).reverse().toString('hex')
+    if (onOutAddress) {
+        scripts.forEach(({ script, value }) => onOutAddress({ script, get addr() { return scriptToAddr(script) }, value, tx_hash }))
+    }
 }
 export function readBlockHeader(data) {
     const hash = sha256(sha256(data.payload.subarray(data.offset, data.offset+80))).reverse().toString('hex')
@@ -251,11 +250,13 @@ export function readBlockHeader(data) {
 export function readBlock(data, onOutAddress) {
     const header = readBlockHeader(data)
     const txCount = readVarInt(data)
-    Array(txCount).fill(0).forEach(() => readTransaction(data, onOutAddress))
+    for (let i = 0; i < txCount; i++) {
+        readTransaction(data, onOutAddress)
+    }
     return { header }
 }
 
-function sha256(data) {
+export function sha256(data) {
     return crypto.createHash('sha256').update(data).digest()
 }
 
