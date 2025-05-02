@@ -153,11 +153,11 @@ function connectNode(addr, onCommand) {
         payloadConstruct.writeBigUint64LE(BigInt(Math.round(Date.now() / 1000)), lastByte); lastByte += 8
         payloadConstruct.write('0100000000000000', lastByte, 'hex'); lastByte += 8
         payloadConstruct.write('00000000000000000000ffff', lastByte, 'hex'); lastByte += 12
-        payloadConstruct.writeUint32BE(ipToInt(socket.remoteAddress || '0.0.0.0'), lastByte); lastByte += 4
+        payloadConstruct.writeInt32BE(ipToInt(socket.remoteAddress || '0.0.0.0'), lastByte); lastByte += 4
         payloadConstruct.writeUInt16BE(socket.remotePort, lastByte); lastByte += 2
         payloadConstruct.write('0800000000000000', lastByte, 'hex'); lastByte += 8
         payloadConstruct.write('00000000000000000000ffff', lastByte, 'hex'); lastByte += 12
-        payloadConstruct.writeUint32BE(ipToInt('0.0.0.0'), lastByte); lastByte += 4
+        payloadConstruct.writeInt32BE(ipToInt('0.0.0.0'), lastByte); lastByte += 4
         payloadConstruct.writeUInt16BE(socket.localPort, lastByte); lastByte += 2
         payloadConstruct.write(crypto.pseudoRandomBytes(8).toString('hex'), lastByte, 'hex'); lastByte += 8
         payloadConstruct.writeUint8(USER_AGENT.length, lastByte); lastByte += 1
