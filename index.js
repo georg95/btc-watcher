@@ -55,6 +55,7 @@ export async function connect(onTransaction, { minNodes=6 }={}) {
             if (command === 'block') {
                 const hash = sha256(sha256(data.payload.subarray(data.offset, data.offset+80))).reverse().toString('hex')
                 if (!seenBlocks.has(hash)) {
+                    seenBlocks.add(hash)
                     readBlock(data, onTransaction)
                     console.log(`⛓️  ${hash}`)
                 }
